@@ -3,6 +3,7 @@
 using System;
 using System.Runtime.Serialization;
 using UnityEditor;
+using UnityEngine;
 
 [System.Serializable]
 public class GitLocksObject
@@ -26,6 +27,7 @@ public class GitLocksObject
         else
         {
             this.objectRef = AssetDatabase.LoadMainAssetAtPath(path);
+            
             return this.objectRef;
         }
     }

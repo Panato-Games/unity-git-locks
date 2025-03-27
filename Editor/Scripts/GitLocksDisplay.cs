@@ -5,13 +5,17 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
 using UnityEngine;
+// ReSharper disable All
 
 [InitializeOnLoad]
 public class GitLocksDisplay : EditorWindow
 {
+    private static Dictionary<string, GUIContent> iconsCache;
+    private static Dictionary<string, bool> hasLockCache;
+    
     private static Texture greenLockIcon;
     private static Texture orangeLockIcon;
-    private static Texture redLockIcon;
+    private static Texture redLockIcon; 
     private static Texture mixedLockIcon;
 
     // Interface sizes
@@ -20,7 +24,7 @@ public class GitLocksDisplay : EditorWindow
     private static float lockIconWidth = 18;
     private static float scrollbarWidth = 20; // In case the scoll view triggers
     private static float checkboxWidth = 30;
-
+    
     private UnityEngine.Object objectToLock;
     private Vector2 scrollPosMine = Vector2.zero;
     private Vector2 scrollPosOthers = Vector2.zero;
@@ -29,14 +33,61 @@ public class GitLocksDisplay : EditorWindow
 
     // Show git history
     private static int showHistoryMaxNumOfFilesBeforeWarning = 5;
+    
+    private static int currentPageMyLocks = 1;
+    private static int currentPageOthersLocks = 1;
+    private class GitLockStyles
+    {
+        public GUIContent lockedByMe;
+        public GUIContent lockedBy;
+        public GUIContent lockConflictingWith;
+        public GUIContent folderContainsMyLocksAndOthers;
+        public GUIContent folderContainsMyLocks;
+        public GUIContent folderContainsOthersLocks;
+        public GUIContent folderContainsConflictingFiles;
+    }
 
+    private static GitLockStyles styles;
+    private static bool stylesInitialized;
+    
     static GitLocksDisplay()
     {
         // Add our own GUI to the project and hierarchy windows
         EditorApplication.projectWindowItemOnGUI += DrawProjectLocks;
         EditorApplication.hierarchyWindowItemOnGUI += DrawHierarchyLocks;
+
+        iconsCache = new Dictionary<string, GUIContent>();
+        hasLockCache = new Dictionary<string, bool>();
+        
+        currentPageMyLocks = 1;
+        currentPageOthersLocks = 1;
     }
 
+    private static void CreateStyles()
+    {
+        styles = new GitLockStyles();
+        
+        styles.lockedByMe = new GUIContent(GetGreenLockIcon(), "Locked by me");
+        styles.lockedBy = new GUIContent(GetOrangeLockIcon(), "Locked by ");
+        styles.lockConflictingWith = new GUIContent(GetRedLockIcon(), "Conflicting with lock by");
+        styles.folderContainsMyLocksAndOthers = new GUIContent(GetMixedLockIcon(), "Folder contains files locked by me and others");
+        styles.folderContainsMyLocks = new GUIContent(GetGreenLockIcon(), "Folder contains files locked by me");
+        styles.folderContainsConflictingFiles = new GUIContent(GetRedLockIcon(), "Folder contains conflicting files");
+        styles.folderContainsOthersLocks = new GUIContent(GetOrangeLockIcon(), "Folder contains files locked by others");
+
+        stylesInitialized = true;
+    }
+    
+    public static void ForceRefreshIconsCache()
+    {
+        //Clearing current cache will make the objects to fill it up during first draw
+        if(iconsCache != null)
+            iconsCache.Clear();
+        
+        if(hasLockCache != null)
+            hasLockCache.Clear();
+    }
+    
     [MenuItem("Window/Git Locks")]
     public static void ShowWindow()
     {
@@ -46,8 +97,11 @@ public class GitLocksDisplay : EditorWindow
 
     public static void RepaintAll()
     {
+        ForceRefreshIconsCache();
+        
         EditorApplication.RepaintHierarchyWindow();
         EditorApplication.RepaintProjectWindow();
+        
         if (EditorWindow.HasOpenInstances<GitLocksDisplay>())
         {
             EditorWindow locksWindow = GetWindow(typeof(GitLocksDisplay), false, "Git Locks", false);
@@ -65,140 +119,188 @@ public class GitLocksDisplay : EditorWindow
         EditorGUI.DrawRect(r, color);
     }
 
-    public static Texture GetIconForLockedObject(GitLocksObject lo)
+    public static GUIContent GetGUIContentForLockedObject(GitLocksObject lo)
     {
         if (lo == null)
         {
             return null;
         }
 
+        if(!stylesInitialized)
+            CreateStyles();
+        
         bool isLockConflictingWithUncommitedFile = GitLocks.IsLockedObjectConflictingWithUncommitedFile(lo);
 
         if (lo.IsMine())
         {
-            return GetGreenLockIcon();
+            return styles.lockedByMe;
         }
         else if (isLockConflictingWithUncommitedFile)
         {
-            return GetRedLockIcon();
+            return styles.lockConflictingWith;
         }
         else
         {
-            return GetOrangeLockIcon();
+            return styles.lockedBy;
         }
     }
 
+    private static void DisplayButton(Rect rect, GUIContent content, string path, GitLocksObject lo)
+    {
+        if (GUI.Button(rect, content, GUI.skin.label))
+        {
+            if (lo.IsMine())
+            {
+                if (!EditorUtility.DisplayDialog("Asset locked by you", "You have locked this asset, you're safe working on it.", "OK", "Unlock"))
+                {
+                    GitLocks.UnlockFile(lo.path);
+                    GitLocks.RefreshLocks();
+                }
+            }
+            else if (GitLocks.IsLockedObjectConflictingWithUncommitedFile(lo))
+            {
+                EditorUtility.DisplayDialog("Asset locked by someone else and conflicting", "User " + lo.owner.name + " has locked this asset (" + lo.GetLockDateTimeString() + ") and you have uncommited modifications: you should probably discard them as you won't be able to push them.", "OK");
+            }
+            else
+            {
+                EditorUtility.DisplayDialog("Asset locked by someone else", "User " + lo.owner.name + " has locked this asset (" + lo.GetLockDateTimeString() + "), you cannot work on it.", "OK");
+            }
+        }
+    }
+    
     public static void DisplayLockIcon(string path, Rect selectionRect, float offset, bool small = false)
     {
         var frame = new Rect(selectionRect);
 
         // Handle files
         GitLocksObject lo = GitLocks.GetObjectInLockedCache(path);
+        
         if (lo != null)
         {
             frame.x += offset + (small ? 3f : 0f);
             frame.width = small ? 12f : 18f;
-
-            Texture lockTexture = GetIconForLockedObject(lo);
-            string tooltip;
-
-            // Fill tooltip
-            if (lo.IsMine())
+            
+            if (iconsCache != null && iconsCache.ContainsKey(path))
             {
-                tooltip = "Locked by me";
-            }
-            else if (GitLocks.IsLockedObjectConflictingWithUncommitedFile(lo))
-            {
-                tooltip = "Conflicting with lock by " + lo.owner.name;
+                DisplayButton(frame, iconsCache[path], path, lo);
+                return;
             }
             else
             {
-                tooltip = "Locked by " + lo.owner.name;
-            }
+                GUIContent lockContent = GetGUIContentForLockedObject(lo);
+                string tooltip;
 
-            if (GUI.Button(frame, new GUIContent(lockTexture, tooltip), GUI.skin.label))
-            {
+                // Fill tooltip
                 if (lo.IsMine())
                 {
-                    if (!EditorUtility.DisplayDialog("Asset locked by you", "You have locked this asset, you're safe working on it.", "OK", "Unlock"))
-                    {
-                        GitLocks.UnlockFile(lo.path);
-                        GitLocks.RefreshLocks();
-                    }
+                    tooltip = "Locked by me";
                 }
                 else if (GitLocks.IsLockedObjectConflictingWithUncommitedFile(lo))
                 {
-                    EditorUtility.DisplayDialog("Asset locked by someone else and conflicting", "User " + lo.owner.name + " has locked this asset (" + lo.GetLockDateTimeString() + ") and you have uncommited modifications: you should probably discard them as you won't be able to push them.", "OK");
+                    tooltip = "Conflicting with lock by " + lo.owner.name;
                 }
                 else
                 {
-                    EditorUtility.DisplayDialog("Asset locked by someone else", "User " + lo.owner.name + " has locked this asset (" + lo.GetLockDateTimeString() + "), you cannot work on it.", "OK");
+                    tooltip = "Locked by " + lo.owner.name;
                 }
+
+                lockContent.tooltip = tooltip;
+
+                if(iconsCache != null)
+                    iconsCache.TryAdd(path, lockContent);
+
+                if (hasLockCache != null)
+                    hasLockCache.TryAdd(path, true);
+
+                DisplayButton(frame, lockContent, path, lo);
+                return;
             }
         }
-
+        
         // Handle folders
         if (Directory.Exists(path) && GitLocks.LockedObjectsCache != null)
         {
-            bool containsOneOfMyLocks = false;
-            bool containsOneOfOtherLocks = false;
-            bool containsOneConflictingLock = false;
-            foreach (GitLocksObject dlo in GitLocks.LockedObjectsCache)
+            frame.x += offset + 15;
+            frame.width = 15f;
+            
+            if (iconsCache != null && iconsCache.ContainsKey(path))
             {
-                string folderPath = path + "/";
-                if (dlo.path.Contains(folderPath))
+                GUI.Button(frame, iconsCache[path], GUI.skin.label);
+                return;
+            }
+            else
+            {
+                bool containsOneOfMyLocks = false;
+                bool containsOneOfOtherLocks = false;
+                bool containsOneConflictingLock = false;
+
+                for (var i = 0; i < GitLocks.LockedObjectsCache.Count; i++)
                 {
-                    if (dlo.IsMine())
+                    var locksObject = GitLocks.LockedObjectsCache[i];
+
+                    string folderPath = path + "/";
+                    if (locksObject.path.Contains(folderPath))
                     {
-                        containsOneOfMyLocks = true;
+                        if (locksObject.IsMine())
+                        {
+                            containsOneOfMyLocks = true;
+                        }
+                        else if (GitLocks.IsLockedObjectConflictingWithUncommitedFile(locksObject))
+                        {
+                            containsOneConflictingLock = true;
+                            containsOneOfOtherLocks = true;
+                        }
+                        else
+                        {
+                            containsOneOfOtherLocks = true;
+                        }
+
+                        if (containsOneOfMyLocks && containsOneOfOtherLocks)
+                        {
+                            break;
+                        }
                     }
-                    else if (GitLocks.IsLockedObjectConflictingWithUncommitedFile(dlo))
+                }
+
+                if (containsOneOfMyLocks || containsOneOfOtherLocks)
+                {
+                    GUIContent guiContent;
+
+                    if (!stylesInitialized)
+                        CreateStyles();
+
+                    if (containsOneOfMyLocks && containsOneOfOtherLocks)
                     {
-                        containsOneConflictingLock = true;
-                        containsOneOfOtherLocks = true;
+                        guiContent = styles.folderContainsMyLocksAndOthers;
+                    }
+                    else if (containsOneOfMyLocks)
+                    {
+                        guiContent = styles.folderContainsMyLocks;
+                    }
+                    else if (containsOneConflictingLock)
+                    {
+                        guiContent = styles.folderContainsConflictingFiles;
                     }
                     else
                     {
-                        containsOneOfOtherLocks = true;
+                        guiContent = styles.folderContainsOthersLocks;
                     }
-                    if (containsOneOfMyLocks && containsOneOfOtherLocks)
-                    {
-                        break;
-                    }
-                }
-            }
 
-            if (containsOneOfMyLocks || containsOneOfOtherLocks)
-            {
-                frame.x += offset + 15;
-                frame.width = 15f;
-                string tooltip;
-                Texture lockTexture;
-
-                if (containsOneOfMyLocks && containsOneOfOtherLocks)
-                {
-                    lockTexture = GetMixedLockIcon();
-                    tooltip = "Folder contains files locked by me and others";
+                    
+                    if(iconsCache != null)
+                        iconsCache.Add(path, guiContent);
+                    
+                    if (hasLockCache != null)
+                        hasLockCache.TryAdd(path, true);
+                    
+                    GUI.Button(frame, guiContent, GUI.skin.label);
+                    return;
                 }
-                else if (containsOneOfMyLocks)
-                {
-                    lockTexture = GetGreenLockIcon();
-                    tooltip = "Folder contains files locked by me";
-                }
-                else if (containsOneConflictingLock)
-                {
-                    lockTexture = GetRedLockIcon();
-                    tooltip = "Folder contains conflicting files";
-                }
-                else
-                {
-                    lockTexture = GetOrangeLockIcon();
-                    tooltip = "Folder contains files locked by others";
-                }
-
-                GUI.Button(frame, new GUIContent(lockTexture, tooltip), GUI.skin.label);
             }
         }
+        
+        if (hasLockCache != null && !string.IsNullOrEmpty(path))
+            hasLockCache.TryAdd(path, false);
     }
 
     // -----------------------
@@ -455,7 +557,20 @@ public class GitLocksDisplay : EditorWindow
 
         string path = AssetDatabase.GUIDToAssetPath(guid);
 
-        DisplayLockIcon(path, selectionRect, -12f);
+        if(string.IsNullOrEmpty(path))
+            return;
+        
+        if (hasLockCache.ContainsKey(path))
+        {
+            //Second display, only re-draw if there was a lock
+            if(hasLockCache[path])
+                DisplayLockIcon(path, selectionRect, -12f);
+        }
+        else
+        {
+            //First display, check if there is a lock
+            DisplayLockIcon(path, selectionRect, -12f);
+        }
     }
 
     private static void DrawHierarchyLocks(int instanceID, Rect selectionRect)
@@ -551,68 +666,83 @@ public class GitLocksDisplay : EditorWindow
     private static void DrawLockedObjectLine(GitLocksObject lo, bool myLock = false)
     {
         UnityEngine.Object lockedObj = lo.GetObjectReference();
-        if (lockedObj != null)
+
+        var ogColor = GUI.color;
+
+        if (lockedObj == null)
+            GUI.color = Color.yellow;
+        
+        float totalOtherWidth = EditorGUIUtility.currentViewWidth - lockIconWidth - scrollbarWidth - checkboxWidth;
+        totalOtherWidth -= EditorPrefs.GetBool("gitLocksShowForceButtons") ? forceUnlockButtonWidth : 0;
+        totalOtherWidth -= myLock ? unlockButtonWidth : 0;
+        float othersWidth = totalOtherWidth / 3;
+
+        GUILayout.BeginHorizontal();
+
+        GUIContent guiContent = GetGUIContentForLockedObject(lo);
+
+        // Checkboxes for custom selection
+        if (myLock)
         {
-            float totalOtherWidth = EditorGUIUtility.currentViewWidth - lockIconWidth - scrollbarWidth - checkboxWidth;
-            totalOtherWidth -= EditorPrefs.GetBool("gitLocksShowForceButtons") ? forceUnlockButtonWidth : 0;
-            totalOtherWidth -= myLock ? unlockButtonWidth : 0;
-            float othersWidth = totalOtherWidth / 3;
-
-            GUILayout.BeginHorizontal();
-
-            Texture lockTexture = GetIconForLockedObject(lo);
-
-            // Checkboxes for custom selection
-            if (myLock)
+            if (selectedLocks == null)
             {
-                if (selectedLocks == null)
-                {
-                    selectedLocks = new List<GitLocksObject>();
-                }
-                bool checkbox = GUILayout.Toggle(selectedLocks.Contains(lo), "");
-                if (checkbox && !selectedLocks.Contains(lo))
-                {
-                    selectedLocks.Add(lo);
-                }
-                else if (!checkbox && selectedLocks.Contains(lo))
-                {
-                    selectedLocks.Remove(lo);
-                }
+                selectedLocks = new List<GitLocksObject>();
             }
 
-            GUILayout.Button(lockTexture, GUI.skin.label, GUILayout.Height(18), GUILayout.Width(18));
-
-            EditorGUI.BeginDisabledGroup(true);
-            EditorGUILayout.ObjectField(lockedObj, lockedObj.GetType(), false, GUILayout.Width(othersWidth));
-            EditorGUI.EndDisabledGroup();
-
-            EditorGUILayout.LabelField(new GUIContent(lo.path, lo.path), GUILayout.Width(othersWidth));
-
-            GUILayout.Label(new GUIContent(lo.owner.name, lo.GetLockDateTimeString()), GUILayout.Width(othersWidth));
-
-            if (myLock)
+            bool checkbox = GUILayout.Toggle(selectedLocks.Contains(lo), "");
+            if (checkbox && !selectedLocks.Contains(lo))
             {
-                if (GUILayout.Button("Unlock"))
+                selectedLocks.Add(lo);
+            }
+            else if (!checkbox && selectedLocks.Contains(lo))
+            {
+                selectedLocks.Remove(lo);
+            }
+        }
+
+        GUILayout.Button(guiContent.image, GUI.skin.label, GUILayout.Height(18), GUILayout.Width(18));
+
+        EditorGUI.BeginDisabledGroup(true);
+
+        if (lockedObj != null)
+        {
+            EditorGUILayout.ObjectField(lockedObj, lockedObj.GetType(), false, GUILayout.Width(othersWidth));
+        }
+        else
+        {
+            EditorGUILayout.TextField("Asset not found at path! Unlock it if not needed and/or lock it again.", GUILayout.Width(othersWidth));
+        }
+
+        EditorGUI.EndDisabledGroup();
+
+        GUILayout.Label(new GUIContent(lo.path, lo.path), GUILayout.Width(othersWidth));
+
+        GUILayout.Label(new GUIContent(lo.owner.name, lo.GetLockDateTimeString()), GUILayout.Width(othersWidth));
+
+        if (myLock)
+        {
+            if (GUILayout.Button("Unlock"))
+            {
+                GitLocks.UnlockFile(lo.path);
+                GitLocks.RefreshLocks();
+            }
+        }
+
+        if (EditorPrefs.GetBool("gitLocksShowForceButtons"))
+        {
+            if (GUILayout.Button("Force unlock"))
+            {
+                if (EditorUtility.DisplayDialog("Force unlock ?", "Are you sure you want to force the unlock ? It may mess with a teammate's work !", "Yes, I know the risks", "Cancel, I'm not sure"))
                 {
-                    GitLocks.UnlockFile(lo.path);
+                    GitLocks.UnlockFile(lo.path, true);
                     GitLocks.RefreshLocks();
                 }
             }
-
-            if (EditorPrefs.GetBool("gitLocksShowForceButtons"))
-            {
-                if (GUILayout.Button("Force unlock"))
-                {
-                    if (EditorUtility.DisplayDialog("Force unlock ?", "Are you sure you want to force the unlock ? It may mess with a teammate's work !", "Yes, I know the risks", "Cancel, I'm not sure"))
-                    {
-                        GitLocks.UnlockFile(lo.path, true);
-                        GitLocks.RefreshLocks();
-                    }
-                }
-            }
-
-            GUILayout.EndHorizontal();
         }
+
+        GUILayout.EndHorizontal();
+
+        GUI.color = ogColor;
     }
 
     private static Texture GetGreenLockIcon(bool forceReload = false)
@@ -791,10 +921,13 @@ public class GitLocksDisplay : EditorWindow
 
                 GUILayout.Space(5);
 
+                
                 // My locks
+                GUILayout.BeginVertical();
                 GUILayout.BeginHorizontal();
+                
                 EditorGUILayout.LabelField("My locks", EditorStyles.boldLabel);
-
+                
                 GUILayout.FlexibleSpace();
 
                 bool allSelected = false;
@@ -821,21 +954,31 @@ public class GitLocksDisplay : EditorWindow
                     selectedLocks.Clear();
                 }
 
+                var maxLocksPerPage = EditorPrefs.GetInt("maxLocksPerPage", 20);
                 GUILayout.EndHorizontal();
+                
+                var myLocks = GitLocks.GetMyLocks();
 
-                if (GitLocks.LockedObjectsCache != null && GitLocks.LockedObjectsCache.Count > 0)
+                DrawPagination(ref currentPageMyLocks, myLocks.Count);
+                
+                EditorGUILayout.EndVertical();
+
+                if (myLocks != null && GitLocks.LockedObjectsCache != null && GitLocks.LockedObjectsCache.Count > 0)
                 {
                     // Compute min height for "My locks"
                     int numOfLines = Mathf.Min(EditorPrefs.GetInt("numOfMyLocksDisplayed", 5), GitLocks.GetMyLocks().Count);
                     float scrollViewHeight = ((float)numOfLines + 0.5f) * 21.0f; // Line height hardcoded for now, +0.5 is used to make sure there's something crossing the float line for clarity
 
                     this.scrollPosMine = EditorGUILayout.BeginScrollView(this.scrollPosMine, GUILayout.MinHeight(scrollViewHeight));
-                    foreach (GitLocksObject lo in GitLocks.GetMyLocks())
+
+                    var pageMinIndex = (currentPageMyLocks - 1) * maxLocksPerPage;
+                    var pageMaxIndex = currentPageMyLocks * maxLocksPerPage;
+                    
+                    for (var i = pageMinIndex; i < pageMaxIndex && i < myLocks.Count; i++)
                     {
-                        if (true || lo != null)
-                        {
-                            DrawLockedObjectLine(lo, true);
-                        }
+                        var lo = myLocks[i];
+
+                        DrawLockedObjectLine(lo, true);
                     }
 
                     EditorGUILayout.EndScrollView();
@@ -844,23 +987,88 @@ public class GitLocksDisplay : EditorWindow
                 DrawUILine(Color.grey, 2, 20);
 
                 // Other locks
-                GUILayout.BeginHorizontal();
+                GUILayout.BeginVertical();
                 EditorGUILayout.LabelField("Other locks", EditorStyles.boldLabel);
-                GUILayout.EndHorizontal();
+                
+                var otherLocks = GitLocks.GetOtherLocks();
+
+                DrawPagination(ref currentPageOthersLocks, otherLocks.Count);
+               
+                GUILayout.EndVertical();
+                
                 if (GitLocks.LockedObjectsCache != null && GitLocks.LockedObjectsCache.Count > 0)
                 {
                     this.scrollPosOthers = EditorGUILayout.BeginScrollView(this.scrollPosOthers);
-                    foreach (GitLocksObject lo in GitLocks.GetOtherLocks())
+                    
+                    var pageMinIndex = (currentPageOthersLocks - 1) * maxLocksPerPage;
+                    var pageMaxIndex = currentPageOthersLocks * maxLocksPerPage;
+                    
+                    for (var i = pageMinIndex; i < pageMaxIndex && i < otherLocks.Count; i++)
                     {
-                        if (true || lo != null)
-                        {
-                            DrawLockedObjectLine(lo);
-                        }
+                        var lo = otherLocks[i];
+
+                        DrawLockedObjectLine(lo);
                     }
 
                     EditorGUILayout.EndScrollView();
+
                 }
             }
         }
     }
+
+    private void DrawPagination(ref int currentPage, int locksAmount)
+    {
+        GUILayout.BeginHorizontal();
+
+        EditorGUILayout.LabelField("Page");
+        currentPage = EditorGUILayout.IntField(currentPage, GUILayout.Width(50));
+
+        if (currentPage < 1)
+            currentPage = 1;
+
+        var maxLocksPerPage = EditorPrefs.GetInt("maxLocksPerPage", 20);
+        var maxPage = (locksAmount / maxLocksPerPage);
+
+        //More on the last page
+        if (locksAmount % maxLocksPerPage != 0)
+            maxPage++;
+
+        if (maxPage < 1)
+            maxPage = 1;
+
+        if (currentPage > maxPage)
+            currentPage = maxPage;
+
+        EditorGUI.BeginDisabledGroup(true);
+        EditorGUILayout.IntField(maxPage, GUILayout.Width(50));
+        EditorGUI.EndDisabledGroup();
+
+        EditorGUI.BeginDisabledGroup(currentPage <= 1);
+
+        if (GUILayout.Button("<<", GUILayout.Width(30)))
+        {
+            currentPage--;
+
+            if (currentPage < 1)
+                currentPage = 1;
+        }
+
+        EditorGUI.EndDisabledGroup();
+
+        EditorGUI.BeginDisabledGroup(currentPage >= maxPage);
+
+        if (GUILayout.Button(">>", GUILayout.Width(30)))
+        {
+            currentPage++;
+
+            if (currentPage > maxPage)
+                currentPage = maxPage;
+        }
+
+        EditorGUI.EndDisabledGroup();
+
+        GUILayout.EndHorizontal();
+    }
+
 }

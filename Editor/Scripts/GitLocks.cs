@@ -12,6 +12,9 @@ using UnityEngine.SceneManagement;
 [InitializeOnLoad]
 public class GitLocks : ScriptableObject
 {
+    private static Dictionary<string, GitLocksObject> lockedObjectsCacheByName;
+    private static Dictionary<UnityEngine.Object, GitLocksObject> lockedObjectsCacheByObject;
+    
     private static List<GitLocksObject> lockedObjectsCache;
     private static List<string> uncommitedFilesCache;
     private static List<string> modifiedOnServerFilesCache;
@@ -103,10 +106,14 @@ public class GitLocks : ScriptableObject
     // Properties
     public static List<GitLocksObject> LockedObjectsCache => lockedObjectsCache;
 
+    public static List<string> DirectoriesCache { get; set; }
+
     public static DateTime LastRefresh => lastRefresh;
 
     public static bool CurrentlyRefreshing => currentlyRefreshing;
 
+    public static Action OnLocksRefresh;
+    
     // Methods 
     public static void CheckLocksRefresh()
     {

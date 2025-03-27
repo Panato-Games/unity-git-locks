@@ -156,6 +156,15 @@ public class GitLocksPreferences : SettingsProvider
             {
                 EditorPrefs.SetInt("numOfMyLocksDisplayed", numOfMyLocksDisplayed);
             }
+                
+            int maxOfLocksPerPage = EditorGUILayout.IntField(new GUIContent("Max locks per page"), EditorPrefs.GetInt("maxLocksPerPage", 20));
+            if (EditorGUI.EndChangeCheck())
+            {
+                if (maxOfLocksPerPage < 1)
+                    maxOfLocksPerPage = 1;
+                
+                EditorPrefs.SetInt("maxLocksPerPage", maxOfLocksPerPage);
+            }
 
             EditorGUI.BeginChangeCheck();
             bool colorblindMode = EditorGUILayout.ToggleLeft(new GUIContent("Colorblind mode"), EditorPrefs.GetBool("gitLocksColorblindMode"));
