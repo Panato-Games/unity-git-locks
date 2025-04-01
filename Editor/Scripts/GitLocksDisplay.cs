@@ -958,8 +958,9 @@ public class GitLocksDisplay : EditorWindow
                 GUILayout.EndHorizontal();
                 
                 var myLocks = GitLocks.GetMyLocks();
-
-                DrawPagination(ref currentPageMyLocks, myLocks.Count);
+                var myLocksCount = myLocks != null ? myLocks.Count : 0;
+                
+                DrawPagination(ref currentPageMyLocks, myLocksCount);
                 
                 EditorGUILayout.EndVertical();
 
@@ -991,8 +992,9 @@ public class GitLocksDisplay : EditorWindow
                 EditorGUILayout.LabelField("Other locks", EditorStyles.boldLabel);
                 
                 var otherLocks = GitLocks.GetOtherLocks();
+                var otherLocksCount = otherLocks != null ? otherLocks.Count : 0;
 
-                DrawPagination(ref currentPageOthersLocks, otherLocks.Count);
+                DrawPagination(ref currentPageOthersLocks, otherLocksCount);
                
                 GUILayout.EndVertical();
                 
